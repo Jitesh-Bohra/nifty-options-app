@@ -1,60 +1,42 @@
 import streamlit as st
 import pandas as pd
+import io
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="NIFTY Options Analyzer", layout="wide")
 
-# --- CUSTOM PROCESSING LOGIC (BUFFER FUNCTION) ---
-def compute_option_positions(df_raw):
+# --- CUSTOM PROCESSING LOGIC ---
+def compute_option_positions(df):
     """
-    Scans the raw CSV for headers, extracts exactly the columns needed, 
-    and computes the ATM Straddle Premium.
+    Extracts the exact columns and computes the ATM Straddle Premium.
     """
-    # 1. Find the actual header row by scanning for the word 'STRIKE'
-    header_row_index = -1
-    for i in range(min(10, len(df_raw))):
-        # Convert the row to uppercase text to search it safely
-        row_vals = [str(x).upper().strip() for x in df_raw.iloc[i].values]
-        if 'STRIKE' in row_vals or 'STRIKE PRICE' in row_vals:
-            header_row_index = i
-            break
-            
-    if header_row_index == -1:
-        raise ValueError("Could not find the header row containing 'STRIKE'.")
-        
-    # 2. Get the exact column positions based on the found header row
-    row_vals = [str(x).upper().strip() for x in df_raw.iloc[header_row_index].values]
+    # 1. Dynamically locate columns to prevent index errors
+    # Pandas handles duplicate column names (like 'LTP') by automatically naming the second one 'LTP.1'
+    strike_cols = [col for col in df.columns if 'STRIKE' in str(col).upper()]
+    ltp_cols = [col for col in df.columns if 'LTP' in str(col).upper()]
     
-    try:
-        strike_idx = row_vals.index('STRIKE')
-    except ValueError:
-        strike_idx = row_vals.index('STRIKE PRICE') # Fallback
+    if not strike_cols or len(ltp_cols) < 2:
+        raise ValueError(f"Could not locate columns. Found STRIKE: {strike_cols}, Found LTP: {ltp_cols}")
         
-    ltp_indices = [i for i, x in enumerate(row_vals) if x == 'LTP']
+    strike_col = strike_cols[0]
+    call_col = ltp_cols[0]
+    put_col = ltp_cols[1]
     
-    if len(ltp_indices) < 2:
-        raise ValueError("Expected 2 'LTP' columns (Call & Put), but did not find them.")
+    extracted_df = df[[strike_col, call_col, put_col]].copy()
+    extracted_df.columns = ['Strike_Price', 'Call_LTP', 'Put_LTP']
+    
+    # 2. Clean the data: Remove commas, replace hyphens with 0, and convert to numbers
+    for col in extracted_df.columns:
+        extracted_df[col] = extracted_df[col].astype(str).str.replace(',', '', regex=False)
+        extracted_df[col] = extracted_df[col].str.replace('-', '0', regex=False)
+        extracted_df[col] = pd.to_numeric(extracted_df[col], errors='coerce').fillna(0)
         
-    call_idx = ltp_indices[0]
-    put_idx = ltp_indices[1]
-    
-    # 3. Extract only the data rows (everything below the header) and the 3 specific columns
-    data_df = df_raw.iloc[header_row_index + 1:, [strike_idx, call_idx, put_idx]].copy()
-    data_df.columns = ['Strike_Price', 'Call_LTP', 'Put_LTP']
-    
-    # 4. Clean the data: Remove commas, replace hyphens with 0, and convert to numbers
-    for col in data_df.columns:
-        data_df[col] = data_df[col].astype(str).str.replace(',', '', regex=False)
-        data_df[col] = data_df[col].str.replace('-', '0', regex=False)
-        data_df[col] = pd.to_numeric(data_df[col], errors='coerce').fillna(0)
-        
-    # 5. Filter out invalid rows (like summary text at the bottom of the CSV)
-    clean_df = data_df[data_df['Strike_Price'] > 0].reset_index(drop=True)
+    # 3. Filter out invalid rows (like summary text at the bottom of the CSV)
+    clean_df = extracted_df[extracted_df['Strike_Price'] > 0].reset_index(drop=True)
     
     # --- PROXY COMPUTATION: ATM STRADDLE ---
     clean_df['Price_Diff'] = abs(clean_df['Call_LTP'] - clean_df['Put_LTP'])
     
-    # Exclude rows where prices are 0 to avoid false matches on empty strikes
     valid_df = clean_df[(clean_df['Call_LTP'] > 0) & (clean_df['Put_LTP'] > 0)]
     
     if not valid_df.empty:
@@ -80,12 +62,22 @@ uploaded_file = st.file_uploader("Upload NSE CSV File", type=["csv"])
 
 if uploaded_file is not None:
     try:
-        # We read the CSV without assuming any headers (header=None) so our custom logic can process it
-        raw_df = pd.read_csv(uploaded_file, header=None)
+        # --- ROBUST CSV SCANNER ---
+        # Read the raw text to find exactly which line contains the headers
+        content = uploaded_file.getvalue().decode('utf-8').splitlines()
         
-        # Show a quick preview of the raw uploaded data
+        header_row_index = 0
+        for i, line in enumerate(content):
+            if 'STRIKE' in line.upper():
+                header_row_index = i
+                break
+        
+        # Reset the file pointer and read with pandas, skipping the junk rows above the header
+        uploaded_file.seek(0)
+        raw_df = pd.read_csv(uploaded_file, skiprows=header_row_index)
+        
         with st.expander("Preview Raw Data (Click to expand)"):
-            st.dataframe(raw_df.head(10))
+            st.dataframe(raw_df.head(5))
         
         # --- RUN COMPUTATIONS ---
         with st.spinner("Cleaning data and computing option positions..."):
@@ -94,7 +86,6 @@ if uploaded_file is not None:
         # --- DISPLAY RESULTS ---
         st.markdown("**Computations Complete.**")
         
-        # Display the ATM Straddle as highlighted metrics
         st.subheader("At-The-Money (ATM) Straddle Info")
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("ATM Strike", f"{atm_strike:,.0f}")
@@ -104,7 +95,6 @@ if uploaded_file is not None:
         
         st.markdown("---") 
         
-        # Display the cleaned options table
         st.subheader("Cleaned Option Chain")
         st.dataframe(
             final_results.style.format({
