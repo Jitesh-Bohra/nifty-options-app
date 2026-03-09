@@ -1,86 +1,76 @@
 import streamlit as st
 import pandas as pd
+import csv
 import io
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="NIFTY Options Analyzer", layout="wide")
 
-# --- 1. RAW TEXT PREPROCESSING ---
-def preprocess_text_to_csv(file_bytes):
+# --- 1. ROBUST CSV PARSER ---
+def process_nse_file(file_bytes):
     """
-    Reads the raw text of the file, finds the headers, fixes the duplicate 
-    column names, and returns a clean, Pandas-compatible CSV string.
+    Decodes the file and uses Python's native CSV reader to safely handle 
+    uneven rows and numbers containing commas (like "21,450.00").
     """
-    # Decode the file bytes into raw text lines
-    lines = file_bytes.decode('utf-8', errors='replace').splitlines()
+    # Decode bytes to a string, ignoring encoding artifacts
+    text = file_bytes.decode('utf-8', errors='ignore')
     
+    # Use the built-in csv reader which natively understands quotation marks
+    reader = csv.reader(io.StringIO(text))
+    rows = list(reader)
+    
+    # Locate the header row
     header_idx = -1
-    # Scan line by line to find the header row containing STRIKE and LTP
-    for i, line in enumerate(lines):
-        line_upper = line.upper()
-        if 'STRIKE' in line_upper and 'LTP' in line_upper:
+    for i, row in enumerate(rows):
+        # Clean up the row strings for safe searching
+        row_upper = [str(cell).upper().strip() for cell in row]
+        if 'STRIKE' in row_upper and 'LTP' in row_upper:
             header_idx = i
             break
             
     if header_idx == -1:
-        raise ValueError("Could not find the header row containing 'STRIKE' and 'LTP' in the text.")
+        raise ValueError("Could not find the header row. Make sure the CSV contains 'STRIKE' and 'LTP' columns.")
         
-    # Split the header row into individual column names
-    raw_headers = lines[header_idx].split(',')
-    clean_headers = [h.strip().replace('"', '').upper() for h in raw_headers]
-    
-    # Locate the exact indices for Strike and the two LTP columns
-    try:
-        strike_idx = clean_headers.index('STRIKE')
-    except ValueError:
-        try:
-            strike_idx = clean_headers.index('STRIKE PRICE')
-        except ValueError:
-            raise ValueError("Found headers, but could not locate the exact 'STRIKE' column.")
-            
-    ltp_indices = [i for i, h in enumerate(clean_headers) if h == 'LTP']
+    # Get exact column indices from the identified header row
+    headers = [str(cell).upper().strip() for cell in rows[header_idx]]
+    strike_idx = headers.index('STRIKE')
+    ltp_indices = [i for i, h in enumerate(headers) if h == 'LTP']
     
     if len(ltp_indices) < 2:
-        raise ValueError("Expected to find 2 'LTP' columns, but found fewer.")
+        raise ValueError("Expected to find 2 'LTP' columns (Call and Put), but found fewer.")
         
-    # Rename them directly in the text so Pandas doesn't get confused
-    clean_headers[ltp_indices[0]] = 'Call_LTP'
-    clean_headers[ltp_indices[1]] = 'Put_LTP'
-    clean_headers[strike_idx] = 'Strike_Price'
+    call_idx = ltp_indices[0]
+    put_idx = ltp_indices[1]
     
-    # Reconstruct the header line
-    new_header_line = ",".join(clean_headers)
-    
-    # Keep only the new header and the actual data rows below it
-    valid_lines = [new_header_line]
-    for line in lines[header_idx + 1:]:
-        # Basic check to skip empty lines or the "Total" row at the bottom
-        if line.strip() and "Total" not in line and len(line.split(',')) > 5:
-            valid_lines.append(line)
+    # Extract only the data we need
+    extracted_data = []
+    for row in rows[header_idx + 1:]:
+        # Ensure the row is long enough (this skips empty lines at the bottom of the file)
+        if len(row) > max(strike_idx, call_idx, put_idx):
+            extracted_data.append({
+                'Strike_Price': row[strike_idx],
+                'Call_LTP': row[call_idx],
+                'Put_LTP': row[put_idx]
+            })
             
-    # Join everything back into a single clean text block
-    clean_csv_text = "\n".join(valid_lines)
-    return clean_csv_text
-
-# --- 2. PANDAS COMPUTATION ---
-def compute_option_positions(df):
-    """
-    Takes the cleaned Pandas dataframe, filters the numbers, 
-    and computes the ATM Straddle.
-    """
-    # Extract only our explicitly named columns
-    extracted_df = df[['Strike_Price', 'Call_LTP', 'Put_LTP']].copy()
+    # Convert to a Pandas DataFrame
+    df = pd.DataFrame(extracted_data)
     
-    # Clean the data: Remove commas, replace hyphens with 0, and convert to numeric
-    for col in extracted_df.columns:
-        extracted_df[col] = extracted_df[col].astype(str).str.replace(',', '', regex=False)
-        extracted_df[col] = extracted_df[col].str.replace('-', '0', regex=False)
-        extracted_df[col] = pd.to_numeric(extracted_df[col], errors='coerce').fillna(0)
+    # Clean the numbers (remove commas, replace hyphens with 0, convert to float)
+    for col in df.columns:
+        df[col] = df[col].astype(str).str.replace(',', '', regex=False)
+        df[col] = df[col].str.replace('-', '0', regex=False)
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-    # Filter out empty strikes
-    clean_df = extracted_df[extracted_df['Strike_Price'] > 0].reset_index(drop=True)
-    
-    # Compute ATM Straddle
+    # Filter out empty or 0 strikes
+    clean_df = df[df['Strike_Price'] > 0].reset_index(drop=True)
+    return clean_df
+
+# --- 2. POSITIONS COMPUTATION ---
+def compute_atm_straddle(clean_df):
+    """
+    Calculates the ATM Straddle premium based on the cleaned data.
+    """
     clean_df['Price_Diff'] = abs(clean_df['Call_LTP'] - clean_df['Put_LTP'])
     valid_df = clean_df[(clean_df['Call_LTP'] > 0) & (clean_df['Put_LTP'] > 0)]
     
@@ -94,29 +84,23 @@ def compute_option_positions(df):
         atm_strike, atm_call, atm_put, straddle_premium = 0, 0, 0, 0
         
     display_df = clean_df[['Strike_Price', 'Call_LTP', 'Put_LTP']].copy()
-    
     return display_df, atm_strike, atm_call, atm_put, straddle_premium
 
 # --- WEBSITE UI ---
 st.title("NIFTY Options Analyzer")
 st.markdown("Upload your NSE Option Chain CSV file below to compute static option positions.")
 
-# File Uploader
 uploaded_file = st.file_uploader("Upload NSE CSV File", type=["csv"])
 
 if uploaded_file is not None:
     try:
-        with st.spinner("Processing raw text and computing positions..."):
-            # Step 1: Preprocess the raw text completely
-            clean_csv_text = preprocess_text_to_csv(uploaded_file.getvalue())
+        with st.spinner("Processing file..."):
+            # Pass the raw file bytes to our robust CSV processor
+            clean_df = process_nse_file(uploaded_file.getvalue())
             
-            # Step 2: Feed the perfectly clean text into Pandas
-            raw_df = pd.read_csv(io.StringIO(clean_csv_text))
-            
-            # Step 3: Run the computations
-            final_results, atm_strike, atm_call, atm_put, straddle_premium = compute_option_positions(raw_df)
+            # Run the calculations
+            final_results, atm_strike, atm_call, atm_put, straddle_premium = compute_atm_straddle(clean_df)
         
-        # --- DISPLAY RESULTS ---
         st.markdown("**Computations Complete.**")
         
         st.subheader("At-The-Money (ATM) Straddle Info")
@@ -139,6 +123,6 @@ if uploaded_file is not None:
         )
         
     except Exception as e:
-        st.markdown(f"**Error processing file:** Details: {e}")
+        st.markdown(f"**Error processing file:** {e}")
 else:
     st.markdown("*Awaiting file upload...*")
