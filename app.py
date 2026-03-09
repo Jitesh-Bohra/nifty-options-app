@@ -112,18 +112,6 @@ if uploaded_file is not None:
         
         st.markdown("---") 
         
-        st.markdown("<h3>Cleaned Option Chain</h3>", unsafe_allow_html=True)
-        st.dataframe(
-            final_results.style.format({
-                'Strike_Price': '{:,.2f}',
-                'Call_LTP': '{:,.2f}',
-                'Put_LTP': '{:,.2f}'
-            }),
-            use_container_width=True
-        )
-        
-        st.markdown("---")
-        
         # --- RAW DATA DISPLAY ---
         st.markdown("<h3>Raw Uploaded Data</h3>", unsafe_allow_html=True)
         
