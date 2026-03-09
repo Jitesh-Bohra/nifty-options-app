@@ -6,6 +6,21 @@ import io
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="NIFTY Options Analyzer", layout="wide")
 
+# --- CUSTOM CSS FOR UNIFORM FONT SIZES ---
+st.markdown("""
+<style>
+    /* Standardize headers to be much closer in size to regular text */
+    h1 { font-size: 24px !important; padding-bottom: 10px !important;}
+    h2 { font-size: 20px !important; }
+    h3 { font-size: 18px !important; }
+    p, li { font-size: 16px !important; }
+    
+    /* Reduce the massive default size of the Metric numbers */
+    [data-testid="stMetricValue"] { font-size: 20px !important; font-weight: bold !important; }
+    [data-testid="stMetricLabel"] { font-size: 16px !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # --- 1. BULLETPROOF CSV PARSER ---
 def process_nse_file(uploaded_file):
     """
@@ -19,7 +34,7 @@ def process_nse_file(uploaded_file):
     extracted_data = []
     
     for row in reader:
-        # NSE data rows always have at least 21 columns. 
+        # NSE data rows always have at least 18 columns. 
         # Strike is index 11, Call LTP is index 5, Put LTP is index 17.
         if len(row) >= 18:
             strike_str = row[11].replace(',', '').replace(' ', '').strip()
@@ -72,8 +87,8 @@ def compute_atm_straddle(clean_df):
     return display_df, atm_strike, atm_call, atm_put, straddle_premium
 
 # --- WEBSITE UI ---
-st.title("NIFTY Options Analyzer")
-st.markdown("Upload your NSE Option Chain CSV file below to compute static option positions.")
+st.markdown("<h1>NIFTY Options Analyzer</h1>", unsafe_allow_html=True)
+st.markdown("<p>Upload your NSE Option Chain CSV file below to compute static option positions.</p>", unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader("Upload NSE CSV File", type=["csv"])
 
@@ -88,7 +103,7 @@ if uploaded_file is not None:
         
         st.markdown("**Computations Complete.**")
         
-        st.subheader("At-The-Money (ATM) Straddle Info")
+        st.markdown("<h3>At-The-Money (ATM) Straddle Info</h3>", unsafe_allow_html=True)
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("ATM Strike", f"{atm_strike:,.0f}")
         col2.metric("Call Premium", f"Rs. {atm_call:,.2f}")
@@ -97,7 +112,7 @@ if uploaded_file is not None:
         
         st.markdown("---") 
         
-        st.subheader("Cleaned Option Chain")
+        st.markdown("<h3>Cleaned Option Chain</h3>", unsafe_allow_html=True)
         st.dataframe(
             final_results.style.format({
                 'Strike_Price': '{:,.2f}',
@@ -107,7 +122,19 @@ if uploaded_file is not None:
             use_container_width=True
         )
         
+        st.markdown("---")
+        
+        # --- RAW DATA DISPLAY ---
+        st.markdown("<h3>Raw Uploaded Data</h3>", unsafe_allow_html=True)
+        
+        # Extract the exact string content of the uploaded file to show it "as is"
+        raw_content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
+        
+        # Load it into pandas skipping bad formatting lines just to display it properly
+        raw_df = pd.read_csv(io.StringIO(raw_content), on_bad_lines='skip', low_memory=False)
+        st.dataframe(raw_df, use_container_width=True)
+        
     except Exception as e:
         st.markdown(f"**Error processing file:** {e}")
 else:
-    st.markdown("*Awaiting file upload...*")
+    st.markdown("<p><i>Awaiting file upload...</i></p>", unsafe_allow_html=True)
