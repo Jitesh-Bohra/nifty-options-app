@@ -1,34 +1,55 @@
 import streamlit as st
 import pandas as pd
+import csv
+import io
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="NIFTY Options Analyzer", layout="wide")
 
-# --- 1. DIRECT INDEX PARSER ---
+# --- 1. BULLETPROOF CSV PARSER ---
 def process_nse_file(uploaded_file):
     """
-    Bypasses header text searching completely. 
-    It skips the top 2 text rows and pulls the data directly via fixed NSE column indices.
+    Reads the CSV line by line. Identifies valid data rows by checking 
+    if the Strike column (index 11) contains a valid number.
     """
-    # Read the file directly, skipping the two header rows. 
-    # header=None prevents Pandas from getting confused by column names.
-    df = pd.read_csv(uploaded_file, skiprows=2, header=None, on_bad_lines='skip')
+    # Read the raw text
+    content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
+    reader = csv.reader(io.StringIO(content))
     
-    # NSE Fixed Structure: 
-    # Index 11 = STRIKE, Index 5 = Call LTP, Index 17 = Put LTP
-    extracted_df = df.iloc[:, [11, 5, 17]].copy()
-    extracted_df.columns = ['Strike_Price', 'Call_LTP', 'Put_LTP']
+    extracted_data = []
     
-    # Clean the numbers (remove commas, spaces, replace hyphens with 0)
-    for col in extracted_df.columns:
-        extracted_df[col] = extracted_df[col].astype(str).str.replace(',', '', regex=False)
-        extracted_df[col] = extracted_df[col].str.replace(' ', '', regex=False)
-        extracted_df[col] = extracted_df[col].str.replace('-', '0', regex=False)
-        extracted_df[col] = pd.to_numeric(extracted_df[col], errors='coerce').fillna(0)
+    for row in reader:
+        # NSE data rows always have at least 21 columns. 
+        # Strike is index 11, Call LTP is index 5, Put LTP is index 17.
+        if len(row) >= 18:
+            strike_str = row[11].replace(',', '').replace(' ', '').strip()
+            
+            # If the Strike column is a number, this is a valid data row
+            try:
+                strike_float = float(strike_str)
+                if strike_float > 0:
+                    extracted_data.append({
+                        'Strike_Price': row[11],
+                        'Call_LTP': row[5],
+                        'Put_LTP': row[17]
+                    })
+            except ValueError:
+                # If it's not a number (e.g., header text or empty), skip the row
+                continue
+                
+    if not extracted_data:
+        raise ValueError("Could not extract any data. Ensure the CSV has standard NSE Option Chain columns.")
         
-    # Filter out empty or 0 strikes to keep the grid clean
-    clean_df = extracted_df[extracted_df['Strike_Price'] > 0].reset_index(drop=True)
-    return clean_df
+    # Convert our perfectly extracted rows into Pandas
+    df = pd.DataFrame(extracted_data)
+    
+    # Clean the numbers (remove commas, replace hyphens with 0)
+    for col in df.columns:
+        df[col] = df[col].astype(str).str.replace(',', '', regex=False)
+        df[col] = df[col].str.replace('-', '0', regex=False)
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
+    return df
 
 # --- 2. POSITIONS COMPUTATION ---
 def compute_atm_straddle(clean_df):
@@ -59,7 +80,7 @@ uploaded_file = st.file_uploader("Upload NSE CSV File", type=["csv"])
 if uploaded_file is not None:
     try:
         with st.spinner("Processing file..."):
-            # Execute our direct index parser
+            # Execute our bulletproof parser
             clean_df = process_nse_file(uploaded_file)
             
             # Run the straddle math
