@@ -113,7 +113,7 @@ if uploaded_file is not None:
         st.markdown("---") 
         
         # --- RAW DATA DISPLAY ---
-        st.markdown("<h3>Raw Uploaded Data</h3>", unsafe_allow_html=True)
+        st.markdown("<h3>Uploaded Data</h3>", unsafe_allow_html=True)
         
         # Extract the exact string content of the uploaded file to show it "as is"
         raw_content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
