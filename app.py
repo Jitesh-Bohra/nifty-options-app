@@ -1,69 +1,33 @@
 import streamlit as st
 import pandas as pd
-import csv
-import io
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="NIFTY Options Analyzer", layout="wide")
 
-# --- 1. ROBUST CSV PARSER ---
-def process_nse_file(file_bytes):
+# --- 1. DIRECT INDEX PARSER ---
+def process_nse_file(uploaded_file):
     """
-    Decodes the file and uses Python's native CSV reader to safely handle 
-    uneven rows and numbers containing commas (like "21,450.00").
+    Bypasses header text searching completely. 
+    It skips the top 2 text rows and pulls the data directly via fixed NSE column indices.
     """
-    # Decode bytes to a string, ignoring encoding artifacts
-    text = file_bytes.decode('utf-8', errors='ignore')
+    # Read the file directly, skipping the two header rows. 
+    # header=None prevents Pandas from getting confused by column names.
+    df = pd.read_csv(uploaded_file, skiprows=2, header=None, on_bad_lines='skip')
     
-    # Use the built-in csv reader which natively understands quotation marks
-    reader = csv.reader(io.StringIO(text))
-    rows = list(reader)
+    # NSE Fixed Structure: 
+    # Index 11 = STRIKE, Index 5 = Call LTP, Index 17 = Put LTP
+    extracted_df = df.iloc[:, [11, 5, 17]].copy()
+    extracted_df.columns = ['Strike_Price', 'Call_LTP', 'Put_LTP']
     
-    # Locate the header row
-    header_idx = -1
-    for i, row in enumerate(rows):
-        # Clean up the row strings for safe searching
-        row_upper = [str(cell).upper().strip() for cell in row]
-        if 'STRIKE' in row_upper and 'LTP' in row_upper:
-            header_idx = i
-            break
-            
-    if header_idx == -1:
-        raise ValueError("Could not find the header row. Make sure the CSV contains 'STRIKE' and 'LTP' columns.")
+    # Clean the numbers (remove commas, spaces, replace hyphens with 0)
+    for col in extracted_df.columns:
+        extracted_df[col] = extracted_df[col].astype(str).str.replace(',', '', regex=False)
+        extracted_df[col] = extracted_df[col].str.replace(' ', '', regex=False)
+        extracted_df[col] = extracted_df[col].str.replace('-', '0', regex=False)
+        extracted_df[col] = pd.to_numeric(extracted_df[col], errors='coerce').fillna(0)
         
-    # Get exact column indices from the identified header row
-    headers = [str(cell).upper().strip() for cell in rows[header_idx]]
-    strike_idx = headers.index('STRIKE')
-    ltp_indices = [i for i, h in enumerate(headers) if h == 'LTP']
-    
-    if len(ltp_indices) < 2:
-        raise ValueError("Expected to find 2 'LTP' columns (Call and Put), but found fewer.")
-        
-    call_idx = ltp_indices[0]
-    put_idx = ltp_indices[1]
-    
-    # Extract only the data we need
-    extracted_data = []
-    for row in rows[header_idx + 1:]:
-        # Ensure the row is long enough (this skips empty lines at the bottom of the file)
-        if len(row) > max(strike_idx, call_idx, put_idx):
-            extracted_data.append({
-                'Strike_Price': row[strike_idx],
-                'Call_LTP': row[call_idx],
-                'Put_LTP': row[put_idx]
-            })
-            
-    # Convert to a Pandas DataFrame
-    df = pd.DataFrame(extracted_data)
-    
-    # Clean the numbers (remove commas, replace hyphens with 0, convert to float)
-    for col in df.columns:
-        df[col] = df[col].astype(str).str.replace(',', '', regex=False)
-        df[col] = df[col].str.replace('-', '0', regex=False)
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        
-    # Filter out empty or 0 strikes
-    clean_df = df[df['Strike_Price'] > 0].reset_index(drop=True)
+    # Filter out empty or 0 strikes to keep the grid clean
+    clean_df = extracted_df[extracted_df['Strike_Price'] > 0].reset_index(drop=True)
     return clean_df
 
 # --- 2. POSITIONS COMPUTATION ---
@@ -95,10 +59,10 @@ uploaded_file = st.file_uploader("Upload NSE CSV File", type=["csv"])
 if uploaded_file is not None:
     try:
         with st.spinner("Processing file..."):
-            # Pass the raw file bytes to our robust CSV processor
-            clean_df = process_nse_file(uploaded_file.getvalue())
+            # Execute our direct index parser
+            clean_df = process_nse_file(uploaded_file)
             
-            # Run the calculations
+            # Run the straddle math
             final_results, atm_strike, atm_call, atm_put, straddle_premium = compute_atm_straddle(clean_df)
         
         st.markdown("**Computations Complete.**")
